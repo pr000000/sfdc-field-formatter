@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<!--
+================================================================================
+  SFDC Input 字段整理工具
+================================================================================
+【用途】上传企查查/爱企查导出的 Excel 文件，自动提取并整理 Salesforce 所需字段，
+       方便直接复制粘贴到 SFDC 系统中进行搜索/录入。
+
+【使用方法】
+  1. 点击或拖拽上传 .xlsx 文件（支持企查查、爱企查等多种格式）
+  2. 工具自动识别表头（跳过文件顶部的声明行）
+  3. 根据表中实际存在的列生成对应字段文本框，无对应列则不显示该字段
+  4. 若某字段总长度超过 1200 字符，会自动分段（每段≤1200字符，在逗号处断开）
+  5. 点击文本框右上角的复制按钮即可复制内容
+
+【字段对应关系】
+  • Account name              ← "英文名"列
+  • Account also known as     ← "系统匹配企业名称"/"企业名称"列
+  • Registration number       ← "统一社会信用代码"/"USCC"列
+  • Website                   ← "官网Domain"/"官网"/"网址"列（去除协议/www/TLD后缀）
+  • Total addressable spending ← "注册资本"列
+
+【注意】若上传的表格中不存在某个对应列，该字段不会显示。
+================================================================================
+-->
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SFDC Input 字段整理工具</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #faf9fc;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #172b4d;
+  padding: 24px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+.subtitle { color: #44546f; font-size: 14px; margin-bottom: 24px; }
+
+.card {
+  background: #f4f5f7;
+  border: 1px solid #ebecf0;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #172b4d; }
+
+.upload-area {
+  border: 2px dashed #dfe1e6;
+  border-radius: 8px;
+  padding: 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: #ffffff;
+}
+.upload-area:hover, .upload-area.dragover {
+  border-color: #0052CC;
+  background: rgba(0, 82, 204, 0.05);
+}
+.upload-area i { font-size: 32px; color: #0052CC; margin-bottom: 8px; }
+.upload-area p { color: #44546f; font-size: 14px; }
+.upload-area .hint { color: #8993a4; font-size: 12px; margin-top: 4px; }
+
+.file-info {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 12px; padding: 8px 12px;
+  background: #ffffff;
+  border-radius: 6px; font-size: 13px;
+  color: #44546f;
+}
+.file-info i { color: #36b37e; }
+
+.btn-remove {
+  background: none; border: none; color: #db0000;
+  cursor: pointer; padding: 4px 8px; border-radius: 4px;
+  font-size: 14px; margin-left: auto; transition: all 0.15s ease;
+}
+.btn-remove:hover { background: #ffe0e0; }
+
+.hidden { display: none; }
+
+.fields-section { margin-top: 16px; }
+.field-group { margin-bottom: 20px; }
+.field-label {
+  display: block; font-size: 13px; font-weight: 600;
+  color: #44546f; margin-bottom: 6px;
+}
+.field-segment {
+  position: relative;
+  margin-bottom: 8px;
+}
+.field-segment textarea {
+  width: 100%; padding: 10px 40px 10px 10px;
+  border: 1px solid #dfe1e6; border-radius: 6px;
+  font-size: 12px; resize: vertical; min-height: 60px;
+  background: #ffffff; color: #172b4d;
+  font-family: monospace;
+}
+.field-segment .segment-label {
+  font-size: 11px; color: #8993a4; margin-bottom: 2px;
+}
+.btn-copy {
+  position: absolute; top: 22px; right: 8px;
+  background: #f4f5f7; border: 1px solid #dfe1e6;
+  border-radius: 4px; padding: 4px 8px;
+  font-size: 11px; cursor: pointer; color: #44546f;
+  transition: all 0.15s ease;
+}
+.btn-copy:hover { background: #e8e8e8; }
+.btn-copy.copied { background: #d9ffd6; border-color: #36b37e; color: #00802f; }
+
+.stats-bar {
+  padding: 10px 14px;
+  background: rgba(54, 179, 126, 0.1);
+  border: 1px solid rgba(54, 179, 126, 0.3);
+  border-radius: 6px;
+  font-size: 13px; color: #172b4d;
+  margin-bottom: 16px;
+}
+.stats-bar strong { font-family: monospace; }
+</style>
+</head>
+<body>
+
+<h1><i class="fa-solid fa-clipboard-list"></i> SFDC Input 字段整理工具</h1>
+<p class="subtitle">上传企查查 Excel 文件，自动生成 Salesforce 录入字段（超过1200字符自动分段）</p>
+
+<div class="card">
+  <div class="card-title"><i class="fa-solid fa-upload"></i> 上传企查查 Excel 文件</div>
+  <div class="upload-area" id="uploadArea">
+    <i class="fa-solid fa-file-excel"></i>
+    <p>点击或拖拽上传 .xlsx 文件</p>
+    <p class="hint">需包含：系统匹配企业名称、统一社会信用代码USCC、英文名、官网Domain 等字段</p>
+  </div>
+  <div class="file-info hidden" id="fileInfo">
+    <i class="fa-solid fa-check-circle"></i>
+    <span id="fileName"></span>
+    <button class="btn-remove" id="removeFileBtn" title="删除文件"><i class="fa-solid fa-xmark"></i></button>
+  </div>
+  <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none">
+</div>
+
+<div class="card hidden" id="resultCard">
+  <div class="card-title"><i class="fa-solid fa-table-list"></i> Salesforce 字段输出</div>
+  <div class="stats-bar" id="statsBar"></div>
+  <div class="fields-section" id="fieldsSection"></div>
+</div>
+
+<script>
+const uploadArea = document.getElementById('uploadArea');
+const fileInput = document.getElementById('fileInput');
+
+uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  uploadArea.classList.remove('dragover');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', (e) => { if (e.target.files.length) handleFile(e.target.files[0]); });
+
+document.getElementById('removeFileBtn').addEventListener('click', () => {
+  document.getElementById('fileInfo').classList.add('hidden');
+  document.getElementById('fileName').textContent = '';
+  document.getElementById('resultCard').classList.add('hidden');
+  fileInput.value = '';
+});
+
+function handleFile(file) {
+  if (!file.name.match(/\.xlsx?$/i)) { alert('请上传 .xlsx 文件'); return; }
+
+  document.getElementById('fileInfo').classList.remove('hidden');
+  document.getElementById('fileName').textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB)`;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const wb = XLSX.read(e.target.result, { type: 'array', raw: false });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const allData = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+
+    // 自动找到真正的表头行（跳过声明行）
+    // 支持企查查、爱企查等多种导出格式
+    // 表头行特征：包含特定字段名但不是一个长句子（说明文字通常很长）
+    let headerRowIdx = 0;
+    for (let i = 0; i < Math.min(allData.length, 20); i++) {
+      const row = allData[i] || [];
+      // 检查这一行的各个单元格是否包含典型表头字段
+      const cellTexts = row.map(c => String(c || '').trim());
+      const hasHeaderField = cellTexts.some(c => 
+        c === '企业名称' || c === '统一社会信用代码' || c === '网址' ||
+        c === '英文名' || c === '原文件导入名称' || c === '系统匹配企业名称' ||
+        c.includes('官网Domain') || c === 'USCC' || c.includes('统一社会信用代码USCC') ||
+        c === '注册资本'
+      );
+      if (hasHeaderField) {
+        headerRowIdx = i;
+        break;
+      }
+    }
+
+    const headers = allData[headerRowIdx] || [];
+    const data = allData.slice(headerRowIdx + 1);
+
+    // Find column indices
+    let colEnName = -1, colMatchName = -1, colUSCC = -1, colDomain = -1, colCapital = -1;
+    headers.forEach((h, i) => {
+      const hs = String(h || '').trim();
+      if (hs.includes('英文名')) colEnName = i;
+      if (hs.includes('系统匹配企业名称') || hs.includes('企业名称')) colMatchName = i;
+      if (hs.includes('统一社会信用代码') || hs.includes('USCC') || hs.includes('统一社会信用代码USCC')) colUSCC = i;
+      if (hs.includes('官网') || hs.includes('官网Domain') || hs.includes('网址')) colDomain = i;
+      if (hs.includes('注册资本')) colCapital = i;
+    });
+
+    // Collect unique non-empty values
+    function collectCol(colIdx) {
+      if (colIdx === -1) return [];
+      const seen = new Set();
+      const result = [];
+      data.forEach(row => {
+        const val = String(row[colIdx] || '').trim();
+        if (val && !seen.has(val)) {
+          seen.add(val);
+          result.push(val);
+        }
+      });
+      return result;
+    }
+
+    // Clean domain
+    function cleanDomain(raw) {
+      let d = raw.trim();
+      d = d.replace(/^https?:\/\//i, '');
+      d = d.replace(/^www\./i, '');
+      d = d.replace(/\/.*$/, '');
+      // Remove TLD suffixes including patterns like .com/.cn
+      d = d.replace(/(\.(com|cn|net|org|co|io|edu|gov|info|biz|me|tv|cc|hk|tw|jp|uk|us|de|fr|ru|in|au|ca|br|mx|kr|sg|my|ph|th|vn|id))(\/\.(com|cn|net|org|co|io|edu|gov|info|biz|me|tv|cc|hk|tw|jp|uk|us|de|fr|ru|in|au|ca|br|mx|kr|sg|my|ph|th|vn|id))*$/i, '');
+      d = d.replace(/\.(com|cn|net|org|co|io|edu|gov|info|biz|me|tv|cc|hk|tw|jp|uk|us|de|fr|ru|in|au|ca|br|mx|kr|sg|my|ph|th|vn|id)$/i, '');
+      return d;
+    }
+
+    const accountNames = collectCol(colEnName);
+    const alsoKnownAs = collectCol(colMatchName);
+    const regNumbers = collectCol(colUSCC);
+    const domains = collectCol(colDomain).map(cleanDomain).filter(d => d.length > 0);
+    const capitals = collectCol(colCapital);
+
+    // Stats
+    document.getElementById('statsBar').innerHTML =
+      `数据行数: <strong>${data.length}</strong> | ` +
+      `英文名: <strong>${accountNames.length}</strong> | ` +
+      `企业名称: <strong>${alsoKnownAs.length}</strong> | ` +
+      `USCC: <strong>${regNumbers.length}</strong> | ` +
+      `域名: <strong>${domains.length}</strong> | ` +
+      `注册资本: <strong>${capitals.length}</strong>`;
+
+    // Split into segments of max 1000 chars, breaking at commas
+    function splitSegments(values, maxLen) {
+      if (values.length === 0) return [''];
+      const segments = [];
+      let current = '';
+      for (let i = 0; i < values.length; i++) {
+        const val = values[i];
+        if (current === '') {
+          current = val;
+        } else {
+          const next = current + ',' + val;
+          if (next.length > maxLen) {
+            segments.push(current);
+            current = val;
+          } else {
+            current = next;
+          }
+        }
+      }
+      if (current) segments.push(current);
+      return segments.length > 0 ? segments : [''];
+    }
+
+    const fields = [];
+    if (colEnName >= 0) fields.push({ label: 'Account name:', segments: splitSegments(accountNames, 1200) });
+    if (colMatchName >= 0) fields.push({ label: 'Account also known as:', segments: splitSegments(alsoKnownAs, 1200) });
+    if (colUSCC >= 0) fields.push({ label: 'Registration number:', segments: splitSegments(regNumbers, 1200) });
+    if (colDomain >= 0) fields.push({ label: 'Website:', segments: splitSegments(domains, 1200) });
+    if (colCapital >= 0) fields.push({ label: 'Total addressable spending:', segments: splitSegments(capitals, 1200) });
+
+    // Render
+    const container = document.getElementById('fieldsSection');
+    container.innerHTML = '';
+    fields.forEach(field => {
+      const group = document.createElement('div');
+      group.className = 'field-group';
+      let html = `<label class="field-label">${field.label}</label>`;
+      field.segments.forEach((seg, idx) => {
+        const segLabel = field.segments.length > 1 ? `<div class="segment-label">第 ${idx+1} 段（${seg.length} 字符）</div>` : '';
+        const id = `field_${field.label.replace(/[^a-z]/gi,'')}_${idx}`;
+        html += `<div class="field-segment">
+          ${segLabel}
+          <textarea id="${id}" readonly rows="3">${seg}</textarea>
+          <button class="btn-copy" onclick="copyField('${id}', this)"><i class="fa-solid fa-copy"></i> 复制</button>
+        </div>`;
+      });
+      group.innerHTML = html;
+      container.appendChild(group);
+    });
+
+    document.getElementById('resultCard').classList.remove('hidden');
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function copyField(id, btn) {
+  const textarea = document.getElementById(id);
+  navigator.clipboard.writeText(textarea.value).then(() => {
+    btn.classList.add('copied');
+    btn.innerHTML = '<i class="fa-solid fa-check"></i> 已复制';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = '<i class="fa-solid fa-copy"></i> 复制';
+    }, 2000);
+  });
+}
+</script>
+</body>
+</html>
